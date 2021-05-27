@@ -37,13 +37,13 @@ Idx Name          Size      VMA       LMA       File off  Algn
                   CONTENTS, READONLY, DEBUGGING, OCTETS
  16 .debug_macro  00017181  00000000  00000000  00033db8  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 17 .debug_line   00010799  00000000  00000000  0004af39  2**0
+ 17 .debug_line   000107a1  00000000  00000000  0004af39  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 18 .debug_str    000976b6  00000000  00000000  0005b6d2  2**0
+ 18 .debug_str    000976b6  00000000  00000000  0005b6da  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 19 .comment      00000053  00000000  00000000  000f2d88  2**0
+ 19 .comment      00000053  00000000  00000000  000f2d90  2**0
                   CONTENTS, READONLY
- 20 .debug_frame  000042d8  00000000  00000000  000f2ddc  2**2
+ 20 .debug_frame  000042d8  00000000  00000000  000f2de4  2**2
                   CONTENTS, READONLY, DEBUGGING, OCTETS
 
 Disassembly of section .text:
@@ -416,7 +416,7 @@ int main(void)
 	while (1)
 	{
 		static uint64_t timestamp = 0;
-		if (micros() - timestamp > 100)
+		if (micros() - timestamp >= 100)
  800051a:	f000 faef 	bl	8000afc <micros>
  800051e:	4b1f      	ldr	r3, [pc, #124]	; (800059c <main+0xcc>)
  8000520:	e9d3 2300 	ldrd	r2, r3, [r3]
@@ -424,7 +424,7 @@ int main(void)
  8000526:	eb61 0503 	sbc.w	r5, r1, r3
  800052a:	2d00      	cmp	r5, #0
  800052c:	bf08      	it	eq
- 800052e:	2c65      	cmpeq	r4, #101	; 0x65
+ 800052e:	2c64      	cmpeq	r4, #100	; 0x64
  8000530:	d3f3      	bcc.n	800051a <main+0x4a>
 		{
 			timestamp = micros();
@@ -447,20 +447,18 @@ int main(void)
  8000554:	b29a      	uxth	r2, r3
  8000556:	4b12      	ldr	r3, [pc, #72]	; (80005a0 <main+0xd0>)
  8000558:	801a      	strh	r2, [r3, #0]
-			if (hspi3.State == HAL_SPI_STATE_READY
+			if (hspi3.State == HAL_SPI_STATE_READY && HAL_GPIO_ReadPin(SPI_SS_GPIO_Port, SPI_SS_Pin)== GPIO_PIN_SET)
  800055a:	4b12      	ldr	r3, [pc, #72]	; (80005a4 <main+0xd4>)
  800055c:	f893 3051 	ldrb.w	r3, [r3, #81]	; 0x51
  8000560:	b2db      	uxtb	r3, r3
  8000562:	2b01      	cmp	r3, #1
  8000564:	d1d9      	bne.n	800051a <main+0x4a>
-					&& HAL_GPIO_ReadPin(SPI_SS_GPIO_Port, SPI_SS_Pin)
  8000566:	f44f 6180 	mov.w	r1, #1024	; 0x400
  800056a:	480f      	ldr	r0, [pc, #60]	; (80005a8 <main+0xd8>)
  800056c:	f002 f8e2 	bl	8002734 <HAL_GPIO_ReadPin>
  8000570:	4603      	mov	r3, r0
  8000572:	2b01      	cmp	r3, #1
  8000574:	d1d1      	bne.n	800051a <main+0x4a>
-							== GPIO_PIN_SET)
 			{
 				MCP4922SetOutput(DACConfig, dataOut);
  8000576:	4b0d      	ldr	r3, [pc, #52]	; (80005ac <main+0xdc>)
