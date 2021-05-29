@@ -22,7 +22,10 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "stdio.h"
+#include <stdlib.h>
+#include "string.h"
+#include "math.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -32,6 +35,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define MAX_PACKET_LEN 255
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -49,13 +53,83 @@ TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim11;
 
 UART_HandleTypeDef huart2;
+DMA_HandleTypeDef hdma_usart2_tx;
+DMA_HandleTypeDef hdma_usart2_rx;
 
 /* USER CODE BEGIN PV */
 uint16_t ADCin = 0;
 uint64_t _micro = 0;
-
 uint16_t dataOut = 0;
 uint8_t DACConfig = 0b0011;
+
+
+typedef struct _UartStructure
+{
+	UART_HandleTypeDef *huart;
+	uint16_t TxLen, RxLen;
+	uint8_t *TxBuffer;
+	uint16_t TxTail, TxHead;
+	uint8_t *RxBuffer;
+	uint16_t RxTail; //RXHeadUseDMA
+
+} UARTStucrture;
+
+UARTStucrture UART2 = { 0 };
+
+typedef struct _TinFGStructure
+{
+	uint16_t Function_GEN_Mode;
+	float Function_GEN_Vpmax;
+	float Function_GEN_Vpmin;
+	float Function_GEN_Period_ms;
+	uint16_t Function_GEN_Setting;
+
+	float Function_GEN_Vdpp;
+	float Function_GEN_Slope;
+	float Function_GEN_Offset;
+	float Function_GEN_Amplitude;
+	float Function_GEN_Dutycycle;
+	float Function_GEN_SlopeType;
+
+} TinFGStructure;
+
+TinFGStructure TinFG = {0};
+
+
+
+typedef enum
+{
+	FG_1stHeader,
+	FG_2ndHeader,
+	FG_ModeSelect,
+
+	FG_Vmax_1,
+	FG_Vmax_2,
+	FG_Vmax_3,
+	FG_Vmax_4,
+
+	FG_Vmin_1,
+	FG_Vmin_2,
+	FG_Vmin_3,
+	FG_Vmin_4,
+
+	FG_Freq_1,
+	FG_Freq_2,
+	FG_Freq_3,
+
+	FG_SlopeSet,
+
+	FG_DutyCycleSet1,
+	FG_DutyCycleSet2,
+	FG_DutyCycleSet3,
+
+	FG_END,
+	FG_Execute
+
+} FGState;
+
+FGState State = FG_1stHeader;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -70,6 +144,15 @@ static void MX_TIM11_Init(void);
 /* USER CODE BEGIN PFP */
 void MCP4922SetOutput(uint8_t Config, uint16_t DACOutput);
 uint64_t micros();
+
+void UARTInit(UARTStucrture *uart);
+void UARTResetStart(UARTStucrture *uart);
+uint32_t UARTGetRxHead(UARTStucrture *uart);
+int16_t UARTReadChar(UARTStucrture *uart);
+void UARTTxDumpBuffer(UARTStucrture *uart);
+void UARTTxWrite(UARTStucrture *uart, uint8_t *pData, uint16_t len);
+void UARTTxWrite(UARTStucrture *uart, uint8_t *pData, uint16_t len);
+void TinFGProtocol(int16_t dataIn, TinFGStructure *var);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -117,18 +200,82 @@ int main(void)
 	HAL_ADC_Start_DMA(&hadc1, (uint32_t*) &ADCin, 1);
 
 	HAL_GPIO_WritePin(LOAD_GPIO_Port, LOAD_Pin, GPIO_PIN_RESET);
+
+	UART2.huart = &huart2;
+	UART2.RxLen = 255;
+	UART2.TxLen = 255;
+	UARTInit(&UART2);
+	UARTResetStart(&UART2);
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
 	while (1)
 	{
-		static uint64_t timestamp = 0;
-		if (micros() - timestamp >= 100)
+
+		int16_t inputChar = UARTReadChar(&UART2);
+		if (inputChar != -1)
 		{
-			timestamp = micros();
-			dataOut++;
-			dataOut %= 4096;
+//			char temp[32];
+//			sprintf(temp, "Recived [%d]\r\n", inputChar);
+//			UARTTxWrite(&UART2, (uint8_t*) temp, strlen(temp));
+			TinFGProtocol(inputChar, &TinFG);
+		}
+
+
+		static uint64_t timestamp = 0;
+		static uint64_t timestamp2 = 0;
+
+			if (micros() - timestamp >= 100)
+			{
+				timestamp = micros();
+				if (TinFG.Function_GEN_Setting == 1)
+				{
+					timestamp2 = micros();
+					TinFG.Function_GEN_Setting = 0;
+				}
+
+			if ((micros()-timestamp2) >= TinFG.Function_GEN_Period_ms)
+				{
+				 timestamp2 = micros();
+				}
+
+			if ( TinFG.Function_GEN_Period_ms > 0)
+			{
+				switch (TinFG.Function_GEN_Mode)
+				{
+					case 0: //DC
+						dataOut = TinFG.Function_GEN_Vpmax;
+					break;
+
+					case 1: //Saw tooth
+						if(TinFG.Function_GEN_SlopeType == 0)
+						{
+							dataOut = (TinFG.Function_GEN_Slope)*(micros()-timestamp2) + TinFG.Function_GEN_Vpmin;
+						}
+						else if (TinFG.Function_GEN_SlopeType == 1)
+						{
+							dataOut = (-1*(TinFG.Function_GEN_Slope)*(micros()-timestamp2)) + TinFG.Function_GEN_Vpmax;
+						}
+					break;
+
+					case 2: //Sine wave
+						dataOut =  (TinFG.Function_GEN_Amplitude*(sin((2*3.141*(micros()-timestamp2)) / TinFG.Function_GEN_Period_ms))) + TinFG.Function_GEN_Offset;
+					break;
+
+					case 3: //Square wave
+						if ((micros()-timestamp2) <= ((TinFG.Function_GEN_Dutycycle*TinFG.Function_GEN_Period_ms)/100.0))
+						{
+							dataOut = TinFG.Function_GEN_Vpmax;
+						}
+						else
+						{
+							dataOut = TinFG.Function_GEN_Vpmin;
+						}
+					break;
+				}
+			}
 			if (hspi3.State == HAL_SPI_STATE_READY && HAL_GPIO_ReadPin(SPI_SS_GPIO_Port, SPI_SS_Pin)== GPIO_PIN_SET)
 			{
 				MCP4922SetOutput(DACConfig, dataOut);
@@ -137,6 +284,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+		UARTTxDumpBuffer(&UART2);
 	}
   /* USER CODE END 3 */
 }
@@ -334,7 +482,7 @@ static void MX_TIM11_Init(void)
 
   /* USER CODE END TIM11_Init 1 */
   htim11.Instance = TIM11;
-  htim11.Init.Prescaler = 100;
+  htim11.Init.Prescaler = 99;
   htim11.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim11.Init.Period = 65535;
   htim11.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -390,8 +538,15 @@ static void MX_DMA_Init(void)
 
   /* DMA controller clock enable */
   __HAL_RCC_DMA2_CLK_ENABLE();
+  __HAL_RCC_DMA1_CLK_ENABLE();
 
   /* DMA interrupt init */
+  /* DMA1_Stream5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
+  /* DMA1_Stream6_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
   /* DMA2_Stream0_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
@@ -455,6 +610,310 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+void UARTInit(UARTStucrture *uart)
+{
+	//dynamic memory allocate
+	uart->RxBuffer = (uint8_t*) calloc(sizeof(uint8_t), UART2.RxLen);
+	uart->TxBuffer = (uint8_t*) calloc(sizeof(uint8_t), UART2.TxLen);
+	uart->RxTail = 0;
+	uart->TxTail = 0;
+	uart->TxHead = 0;
+
+}
+
+void UARTResetStart(UARTStucrture *uart)
+{
+	HAL_UART_Receive_DMA(uart->huart, uart->RxBuffer, uart->RxLen);
+}
+
+uint32_t UARTGetRxHead(UARTStucrture *uart)
+{
+	return uart->RxLen - __HAL_DMA_GET_COUNTER(uart->huart->hdmarx);
+}
+
+int16_t UARTReadChar(UARTStucrture *uart)
+{
+	int16_t Result = -1; // -1 Mean no new data
+
+	//check Buffer Position
+	if (uart->RxTail != UARTGetRxHead(uart))
+	{
+		//get data from buffer
+		Result = uart->RxBuffer[uart->RxTail];
+		uart->RxTail = (uart->RxTail + 1) % uart->RxLen;
+
+	}
+	return Result;
+}
+
+void UARTTxDumpBuffer(UARTStucrture *uart)
+{
+	static uint8_t MultiProcessBlocker = 0;
+
+	if (uart->huart->gState == HAL_UART_STATE_READY && !MultiProcessBlocker)
+	{
+		MultiProcessBlocker = 1;
+
+		if (uart->TxHead != uart->TxTail)
+		{
+			//find len of data in buffer (Circular buffer but do in one way)
+			uint16_t sentingLen =
+					uart->TxHead > uart->TxTail ?
+							uart->TxHead - uart->TxTail :
+							uart->TxLen - uart->TxTail;
+
+			//sent data via DMA
+			HAL_UART_Transmit_DMA(uart->huart, &(uart->TxBuffer[uart->TxTail]),
+					sentingLen);
+			//move tail to new position
+			uart->TxTail = (uart->TxTail + sentingLen) % uart->TxLen;
+
+		}
+		MultiProcessBlocker = 0;
+	}
+}
+
+void UARTTxWrite(UARTStucrture *uart, uint8_t *pData, uint16_t len)
+{
+	//check data len is more than buffur?
+	uint16_t lenAddBuffer = (len <= uart->TxLen) ? len : uart->TxLen;
+	// find number of data before end of ring buffer
+	uint16_t numberOfdataCanCopy =
+			lenAddBuffer <= uart->TxLen - uart->TxHead ?
+					lenAddBuffer : uart->TxLen - uart->TxHead;
+	//copy data to the buffer
+	memcpy(&(uart->TxBuffer[uart->TxHead]), pData, numberOfdataCanCopy);
+
+	//Move Head to new position
+
+	uart->TxHead = (uart->TxHead + lenAddBuffer) % uart->TxLen;
+	//Check that we copy all data That We can?
+	if (lenAddBuffer != numberOfdataCanCopy)
+	{
+		memcpy(uart->TxBuffer, &(pData[numberOfdataCanCopy]),
+				lenAddBuffer - numberOfdataCanCopy);
+	}
+	UARTTxDumpBuffer(uart);
+}
+
+void TinFGProtocol(int16_t dataIn, TinFGStructure *var)
+	{
+		//all Static Variable
+		//static FGState State = FG_idle;
+		static float Vmax = 0;   //mV
+		static float Vmin = 0;
+		static float Freq = 0;
+		static float GenMode = 0;
+		static float Slopemode = 0;
+		static float DutyCycle = 0;
+		var->Function_GEN_Setting = 0;
+
+		switch (State)
+		{
+			case FG_1stHeader:
+				if (dataIn == 'f')
+				{State = FG_2ndHeader;}
+				break;
+			case FG_2ndHeader:
+				if (dataIn == 'g')
+				{State = FG_ModeSelect;}
+				else
+				{State = FG_1stHeader;}
+				break;
+			case FG_ModeSelect:
+				if ((dataIn-48 >= 0) &&  (dataIn-48 <= 3))
+				{
+				GenMode = (dataIn-48);
+				State = FG_Vmax_1;
+				}
+				else
+				{State = FG_1stHeader;}
+				break;
+			case FG_Vmax_1:
+				if ((dataIn-48 >= 0) &&  (dataIn-48 <= 9))
+				{
+				Vmax += (dataIn-48)*1000;
+				State = FG_Vmax_2;
+				}
+				else
+				{State = FG_1stHeader;}
+				break;
+			case FG_Vmax_2:
+				if ((dataIn-48 >= 0) &&  (dataIn-48 <= 9))
+				{
+				Vmax += (dataIn-48)*100;
+				State = FG_Vmax_3;
+				}
+				else
+				{State = FG_1stHeader;}
+			break;
+			case FG_Vmax_3:
+				if ((dataIn-48 >= 0) &&  (dataIn-48 <= 9))
+				{
+				Vmax += (dataIn-48)*10;
+				State = FG_Vmax_4;
+				}
+				else
+				{State = FG_1stHeader;}
+				break;
+			case FG_Vmax_4:
+				if ((dataIn-48 >= 0) &&  (dataIn-48 <= 9))
+				{
+				Vmax += (dataIn-48)*1;
+				State = FG_Vmin_1;
+				}
+				else
+				{State = FG_1stHeader;}
+				break;
+			case FG_Vmin_1:
+				if ((dataIn-48 >= 0) &&  (dataIn-48 <= 9))
+				{
+				Vmin += (dataIn-48)*1000;
+				State = FG_Vmin_2;
+				}
+				else
+				{State = FG_1stHeader;}
+				break;
+			case FG_Vmin_2:
+				if ((dataIn-48 >= 0) &&  (dataIn-48 <= 9))
+				{
+				Vmin += (dataIn-48)*100;
+				State = FG_Vmin_3;
+				}
+				else
+				{State = FG_1stHeader;}
+				break;
+			case FG_Vmin_3:
+				if ((dataIn-48 >= 0) &&  (dataIn-48 <= 9))
+				{
+				Vmin += (dataIn-48)*10;
+				State = FG_Vmin_4;
+				}
+				else
+				{State = FG_1stHeader;}
+				break;
+			case FG_Vmin_4:
+				if ((dataIn-48 >= 0) &&  (dataIn-48 <= 9))
+				{
+				Vmin += (dataIn-48)*1;
+				State = FG_Freq_1;
+				}
+				else
+				{State = FG_1stHeader;}
+				break;
+			case FG_Freq_1:
+				if ((dataIn-48 >= 0) &&  (dataIn-48 <= 9))
+				{
+				Freq += (dataIn-48)*10;
+				State = FG_Freq_2;
+				}
+				else
+				{State = FG_1stHeader;}
+				break;
+			case FG_Freq_2:
+				if ((dataIn-48 >= 0) &&  (dataIn-48 <= 9))
+				{
+				Freq += (dataIn-48)*1;
+				State = FG_Freq_3;
+				}
+				else
+				{State = FG_1stHeader;}
+				break;
+			case FG_Freq_3:
+				if ((dataIn-48 >= 0) &&  (dataIn-48 <= 9))
+				{
+				Freq += (dataIn-48)*0.1;
+				State = FG_SlopeSet;
+				}
+				else
+				{State = FG_1stHeader;}
+				break;
+
+			case FG_SlopeSet:
+				if ((dataIn-48 >= 0) &&  (dataIn-48 <= 1))
+				{
+				Slopemode = (dataIn-48);
+				State = FG_DutyCycleSet1;
+				}
+				else
+				{State = FG_1stHeader;}
+				break;
+
+			case FG_DutyCycleSet1:
+				if ((dataIn-48 >= 0) &&  (dataIn-48 <= 1))
+				{
+				DutyCycle += (dataIn-48)*100;
+				State = FG_DutyCycleSet2;
+				}
+				else
+				{State = FG_1stHeader;}
+				break;
+			case FG_DutyCycleSet2:
+				if ((dataIn-48 >= 0) &&  (dataIn-48 <= 9))
+				{
+				DutyCycle += (dataIn-48)*10;
+				State = FG_DutyCycleSet3;
+				}
+				else
+				{State = FG_1stHeader;}
+				break;
+			case FG_DutyCycleSet3:
+				if ((dataIn-48 >= 0) &&  (dataIn-48 <= 9))
+				{
+				DutyCycle += (dataIn-48)*1;
+				State = FG_END;
+				}
+				else
+				{State = FG_1stHeader;}
+				break;
+			case FG_END:
+				if (dataIn == 'e')
+				{
+				State = FG_Execute;
+				}
+				else
+				{State = FG_1stHeader;}
+				break;
+		}
+
+		if (State == FG_Execute)
+		{
+			State = FG_1stHeader;
+			///Setting
+			var->Function_GEN_Mode = GenMode;
+			var->Function_GEN_Vpmax = (Vmax*4096)/3300.0;
+			var->Function_GEN_Vpmin = (Vmin*4096)/3300.0;
+			var->Function_GEN_Period_ms = 1000000/Freq;
+
+			var->Function_GEN_SlopeType = Slopemode;
+			var->Function_GEN_Dutycycle = DutyCycle;
+
+			var->Function_GEN_Vdpp = (var->Function_GEN_Vpmax) - (var->Function_GEN_Vpmin);
+			var->Function_GEN_Slope = (var->Function_GEN_Vdpp)/(var->Function_GEN_Period_ms);
+			var->Function_GEN_Offset = ((var->Function_GEN_Vpmax) + (var->Function_GEN_Vpmin))/2.0;
+			var->Function_GEN_Amplitude = ((var->Function_GEN_Vpmax) - (var->Function_GEN_Vpmin))/2.0;
+
+			var->Function_GEN_Setting = 1;
+
+
+			char temp[32];
+			sprintf(temp, "FFFFFFFFFF\r\n");
+			UARTTxWrite(&UART2, (uint8_t*) temp, strlen(temp));
+
+			///Reset Var
+			GenMode = 0;
+			Vmax = 0;
+			Vmin = 0;
+			DutyCycle = 0;
+			Slopemode = 0;
+			Freq = 0;
+		}
+
+	}
+
+
+
 void MCP4922SetOutput(uint8_t Config, uint16_t DACOutput)
 {
 	uint32_t OutputPacket = (DACOutput & 0x0fff) | ((Config & 0xf) << 12);
@@ -482,6 +941,8 @@ inline uint64_t micros()
 {
 	return htim11.Instance->CNT + _micro;
 }
+
+
 /* USER CODE END 4 */
 
 /**
